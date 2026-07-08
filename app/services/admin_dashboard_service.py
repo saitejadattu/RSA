@@ -83,7 +83,7 @@ async def get_admin_dashboard() -> dict:
             }
         },
         {"$sort": {"opportunity_received_at": -1, "updated_at": -1}},
-        {"$limit": 8},
+        {"$limit": 500},
     ]
     recent_opportunities = await db[HIRING_OPPORTUNITIES].aggregate(opportunity_pipeline).to_list(length=None)
 

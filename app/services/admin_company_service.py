@@ -1,0 +1,151 @@
+from fastapi import HTTPException, status
+
+from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES, STUDENTS
+from app.db.mongodb import get_database
+from app.utils.mongo import serialize_mongo
+from app.utils.object_id import to_object_id
+
+
+def _object_id(value: str, label: str):
+    try:
+        return to_object_id(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid {label}"
+        )
+
+
+def _blank_counts() -> dict:
+    return {
+        "response_count": 0,
+        "applied_count": 0,
+        "shortlisted_count": 0,
+        "rejected_count": 0,
+        "hired_count": 0,
+        "not_interested_count": 0,
+    }
+
+
+def _tally(counts: dict, application: dict) -> None:
+    counts["response_count"] += 1
+    interested = (
+        application.get("is_interested") is not False
+        and application.get("status") != "not_interested"
+    )
+    if not interested:
+        counts["not_interested_count"] += 1
+        return
+
+    counts["applied_count"] += 1
+    current_status = application.get("status")
+    if current_status == "shortlisted":
+        counts["shortlisted_count"] += 1
+    elif current_status == "rejected":
+        counts["rejected_count"] += 1
+    elif current_status == "hired":
+        counts["hired_count"] += 1
+
+
+async def get_admin_company_detail(company_id: str) -> dict:
+    """Company overview plus each of its opportunities with per-job counts (chooser data)."""
+    db = get_database()
+    object_id = _object_id(company_id, "company id")
+
+    company = await db[COMPANIES].find_one({"_id": object_id})
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    opportunities = (
+        await db[HIRING_OPPORTUNITIES]
+        .find({"company_id": object_id})
+        .sort("opportunity_received_at", -1)
+        .to_list(length=None)
+    )
+    applications = await db[APPLICATIONS].find({"company_id": object_id}).to_list(length=None)
+
+    company_counts = _blank_counts()
+    counts_by_opportunity: dict = {}
+    for application in applications:
+        _tally(company_counts, application)
+        opportunity_id = application.get("opportunity_id")
+        counts_by_opportunity.setdefault(opportunity_id, _blank_counts())
+        _tally(counts_by_opportunity[opportunity_id], application)
+
+    opportunity_rows = []
+    for opportunity in opportunities:
+        counts = counts_by_opportunity.get(opportunity["_id"], _blank_counts())
+        opportunity_rows.append(
+            {
+                "id": opportunity["_id"],
+                "role": opportunity.get("role"),
+                "tech_stack": opportunity.get("tech_stack"),
+                "must_have_skills": opportunity.get("must_have_skills"),
+                "location": opportunity.get("location"),
+                "stipend": opportunity.get("stipend"),
+                "duration": opportunity.get("duration"),
+                "company_status": opportunity.get("company_status"),
+                "opportunity_received_at": opportunity.get("opportunity_received_at"),
+                **counts,
+            }
+        )
+
+    return serialize_mongo(
+        {
+            "company": company,
+            "opportunity_count": len(opportunities),
+            "stats": company_counts,
+            "opportunities": opportunity_rows,
+        }
+    )
+
+
+async def get_admin_opportunity_detail(opportunity_id: str) -> dict:
+    """Full detail for one opportunity: rich fields, counts, and the applicant list."""
+    db = get_database()
+    object_id = _object_id(opportunity_id, "opportunity id")
+
+    opportunity = await db[HIRING_OPPORTUNITIES].find_one({"_id": object_id})
+    if not opportunity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Hiring opportunity not found"
+        )
+
+    company = await db[COMPANIES].find_one({"_id": opportunity.get("company_id")})
+
+    pipeline = [
+        {"$match": {"opportunity_id": object_id}},
+        {"$sort": {"applied_at": -1, "created_at": -1}},
+        {"$lookup": {"from": STUDENTS, "localField": "student_id", "foreignField": "_id", "as": "student"}},
+        {"$unwind": {"path": "$student", "preserveNullAndEmptyArrays": True}},
+        {
+            "$project": {
+                "status": 1,
+                "is_interested": 1,
+                "applied_at": 1,
+                "github_link": 1,
+                "project_link": 1,
+                "resume_link": 1,
+                "has_relevant_project_experience": 1,
+                "student": {
+                    "_id": "$student._id",
+                    "name": "$student.name",
+                    "email": "$student.email",
+                    "phone": "$student.phone",
+                },
+            }
+        },
+    ]
+    applicants = await db[APPLICATIONS].aggregate(pipeline).to_list(length=None)
+
+    counts = _blank_counts()
+    for application in applicants:
+        _tally(counts, application)
+
+    return serialize_mongo(
+        {
+            "company": company,
+            "opportunity": opportunity,
+            "stats": counts,
+            "applicants": applicants,
+        }
+    )
