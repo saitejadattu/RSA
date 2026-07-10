@@ -6,3 +6,10 @@ __pycache__/
 data/
 credentials.json
 token.json
+
+# Generated import/run artifacts
+run_imports*.bat
+company-sheet-downloader/missing_files.txt
+company-sheet-downloader/failed_command_generation.txt
+company-sheet-downloader/failed_downloads.txt
+company-sheet-downloader/companies.txt

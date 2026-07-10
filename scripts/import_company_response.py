@@ -15,6 +15,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES, STATUS_HISTORY, STUDENTS
 from app.db.indexes import create_indexes
 from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database
+from app.models.application import build_application_details, default_placement, final_status_for, normalize_application_status
 from app.models.student import build_student_document
 from app.services.student_service import normalize_email, normalize_phone
 from app.utils.password import hash_password
@@ -197,36 +198,36 @@ async def upsert_student(db, row: dict[str, str]) -> ObjectId | None:
 
 def build_application(row: dict[str, str], *, opportunity: dict, company: dict, student_id: ObjectId) -> dict[str, Any]:
     interested = (pick(row, "Are you interested in applying for this internship opportunity ?") or "").lower() == "yes"
+    current_status = normalize_application_status(None, interested=interested)
     return {
         "student_id": student_id,
         "company_id": company["_id"],
         "opportunity_id": opportunity["_id"],
-        "role": opportunity.get("role"),  # role always from the master opportunity
-        "status": "applied" if interested else "not_interested",
-        "is_interested": interested,
         "applied_at": parse_timestamp(pick(row, "Timestamp")),
-        "skills": extract_skills(row),
-        "has_relevant_project_experience": pick(row, "Do you have relevant project experience?"),
-        "github_link": pick(row, "GitHub Profile Link (Ensure it is public)", "GitHub Profile Link"),
-        "project_link": pick_prefix(row, "Project Link"),
-        "resume_link": pick(row, "Resume Link (Shareable Drive Link with 'Viewer' Access)", "Resume Link"),
-        "willing_remote": pick_prefix(row, "Are you willing to work in"),
-        "available_full_duration": pick_prefix(row, "Are you available for the full"),
-        "comfortable_stipend": pick_prefix(row, "Are you comfortable with the stipend"),
-        "comfortable_schedule": pick_prefix(row, "Are you comfortable with the specified work schedule"),
-        "college_noc": pick(row, "Will your college allow you to proceed with this internship (NOC)?"),
-        "interest_reason": pick_prefix(row, "Why are you interested"),
-        "not_interested_reason": pick(row, "Reason (If NOT Applying) - Please select the primary reason for non-interest."),
-        "not_interested_other_reason": pick(row, "If 'Other' reason was selected, please specify:"),
-        "response_snapshot": {
-            "student_uid": pick(row, "Student UID", "User ID", "Student ID"),
-            "student_name": pick(row, "Student Name", "Candidate Name", "Name"),
-            "email": normalize_email(pick(row, "Email", "Email ID")),
-            "mobile": normalize_phone(pick(row, "Mobile Number", "Phone", "Mobile") or ""),
-            "company_name": company.get("name"),
-            "role": opportunity.get("role"),
-        },
-        "raw_response": row,
+        "source": "response_sheet",
+        "current_status": current_status,
+        "final_status": final_status_for(current_status, interested=interested),
+        "application_details": build_application_details(
+            interested=interested,
+            skills=extract_skills(row),
+            has_relevant_project_experience=pick(row, "Do you have relevant project experience?"),
+            github_link=pick(row, "GitHub Profile Link (Ensure it is public)", "GitHub Profile Link"),
+            project_link=pick_prefix(row, "Project Link"),
+            submitted_resume_url=pick(row, "Resume Link (Shareable Drive Link with 'Viewer' Access)", "Resume Link"),
+            willing_remote=pick_prefix(row, "Are you willing to work in"),
+            available_full_duration=pick_prefix(row, "Are you available for the full"),
+            comfortable_stipend=pick_prefix(row, "Are you comfortable with the stipend"),
+            comfortable_schedule=pick_prefix(row, "Are you comfortable with the specified work schedule"),
+            college_noc=pick(row, "Will your college allow you to proceed with this internship (NOC)?"),
+            interest_reason=pick_prefix(row, "Why are you interested"),
+            non_interest_reason=pick(row, "Reason (If NOT Applying) - Please select the primary reason for non-interest."),
+            other_response={
+                "not_interested_other_reason": pick(row, "If 'Other' reason was selected, please specify:"),
+                "raw_response": row,
+            },
+        ),
+        "placement": default_placement(),
+        "notes": None,
     }
 
 
@@ -273,7 +274,7 @@ async def import_response_sheet(args: argparse.Namespace) -> dict[str, Any]:
                 "company_id": company["_id"],
                 "opportunity_id": opportunity["_id"],
                 "old_status": None,
-                "new_status": application["status"],
+                "new_status": application["current_status"],
                 "reason": "Application imported from response sheet",
                 "changed_by": None,
                 "changed_by_role": "system",

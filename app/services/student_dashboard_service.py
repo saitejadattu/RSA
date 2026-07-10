@@ -1,29 +1,42 @@
 from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES
 from app.db.mongodb import get_database
+from app.models.application import is_real_application
 from app.utils.mongo import serialize_mongo
 
 
 STATUS_LABELS = {
-    "applied": "Applied",
-    "not_interested": "Not Interested",
-    "shortlisted": "Shortlisted",
-    "interview_scheduled": "Interview Scheduled",
-    "in_progress": "In Progress",
-    "rejected": "Rejected",
-    "hired": "Hired",
-    "dropped": "Dropped",
+    "APPLIED": "Applied",
+    "PROFILE_SHARED": "Profile Shared",
+    "SHORTLISTED": "Shortlisted",
+    "INTERVIEW_SCHEDULED": "Interview Scheduled",
+    "INTERVIEW_IN_PROGRESS": "Interview In Progress",
+    "SELECTED": "Selected",
+    "OFFER_PENDING": "Offer Pending",
+    "OFFER_RELEASED": "Offer Released",
+    "OFFER_ACCEPTED": "Offer Accepted",
+    "OFFER_REJECTED": "Offer Rejected",
+    "JOINED": "Joined",
+    "REJECTED": "Rejected",
+    "DROPPED": "Dropped",
 }
-
-
-def is_actual_application(application: dict) -> bool:
-    return application.get("is_interested") is not False and application.get("status") != "not_interested"
 
 
 async def list_student_applications(student: dict, *, include_not_interested: bool = False) -> list[dict]:
     db = get_database()
     match_stage = {"student_id": student["_id"]}
     if not include_not_interested:
-        match_stage.update({"is_interested": {"$ne": False}, "status": {"$ne": "not_interested"}})
+        match_stage.update(
+            {
+                "$or": [
+                    {"application_details.interested": {"$exists": True, "$ne": False}},
+                    {
+                        "application_details": {"$exists": False},
+                        "is_interested": {"$ne": False},
+                        "status": {"$ne": "not_interested"},
+                    },
+                ]
+            }
+        )
 
     pipeline = [
         {"$match": match_stage},
@@ -49,15 +62,20 @@ async def list_student_applications(student: dict, *, include_not_interested: bo
         {
             "$project": {
                 "_id": 1,
-                "status": 1,
-                "is_interested": 1,
+                "current_status": 1,
+                "final_status": 1,
+                "status": {"$ifNull": ["$current_status", "$status"]},
+                "is_interested": {"$ifNull": ["$application_details.interested", "$is_interested"]},
                 "applied_at": 1,
-                "skills": 1,
-                "github_link": 1,
-                "project_link": 1,
-                "resume_link": 1,
+                "application_details": 1,
+                "skills": {"$ifNull": ["$application_details.self_assessment", "$skills"]},
+                "github_link": {"$ifNull": ["$application_details.github_link", "$github_link"]},
+                "project_link": {"$ifNull": ["$application_details.project_link", "$project_link"]},
+                "resume_link": {"$ifNull": ["$application_details.submitted_resume_url", "$resume_link"]},
                 "shortlist": 1,
-                "not_interested_reason": 1,
+                "not_interested_reason": {
+                    "$ifNull": ["$application_details.non_interest_reason", "$not_interested_reason"]
+                },
                 "company": {
                     "_id": "$company._id",
                     "name": "$company.name",
@@ -82,11 +100,11 @@ async def list_student_applications(student: dict, *, include_not_interested: bo
 
 
 def build_summary(applications: list[dict]) -> dict:
-    actual_applications = [item for item in applications if is_actual_application(item)]
+    actual_applications = [item for item in applications if is_real_application(item)]
     total = len(actual_applications)
-    shortlisted = sum(1 for item in actual_applications if item.get("status") == "shortlisted")
-    rejected = sum(1 for item in actual_applications if item.get("status") == "rejected")
-    hired = sum(1 for item in actual_applications if item.get("status") == "hired")
+    shortlisted = sum(1 for item in actual_applications if item.get("status") in {"SHORTLISTED", "shortlisted"})
+    rejected = sum(1 for item in actual_applications if item.get("status") in {"REJECTED", "rejected"})
+    hired = sum(1 for item in actual_applications if item.get("status") in {"SELECTED", "JOINED", "hired"})
     not_interested = len(applications) - total
     active = total - rejected - hired
     return {
@@ -102,11 +120,11 @@ def build_summary(applications: list[dict]) -> dict:
 
 async def get_student_dashboard(student: dict) -> dict:
     response_records = await list_student_applications(student, include_not_interested=True)
-    applications = [application for application in response_records if is_actual_application(application)]
+    applications = [application for application in response_records if is_real_application(application)]
     summary = build_summary(response_records)
     recent_applications = applications[:5]
     shortlisted_applications = [
-        application for application in applications if application.get("status") == "shortlisted"
+        application for application in applications if application.get("status") in {"SHORTLISTED", "shortlisted"}
     ]
     return {
         "summary": summary,

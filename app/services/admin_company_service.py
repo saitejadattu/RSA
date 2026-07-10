@@ -2,6 +2,7 @@ from fastapi import HTTPException, status
 
 from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES, STUDENTS
 from app.db.mongodb import get_database
+from app.models.application import is_real_application, status_for_api
 from app.utils.mongo import serialize_mongo
 from app.utils.object_id import to_object_id
 
@@ -28,21 +29,17 @@ def _blank_counts() -> dict:
 
 def _tally(counts: dict, application: dict) -> None:
     counts["response_count"] += 1
-    interested = (
-        application.get("is_interested") is not False
-        and application.get("status") != "not_interested"
-    )
-    if not interested:
+    if not is_real_application(application):
         counts["not_interested_count"] += 1
         return
 
     counts["applied_count"] += 1
-    current_status = application.get("status")
-    if current_status == "shortlisted":
+    current_status = status_for_api(application)
+    if current_status == "SHORTLISTED" or current_status == "shortlisted":
         counts["shortlisted_count"] += 1
-    elif current_status == "rejected":
+    elif current_status == "REJECTED" or current_status == "rejected":
         counts["rejected_count"] += 1
-    elif current_status == "hired":
+    elif current_status in {"SELECTED", "JOINED", "hired"}:
         counts["hired_count"] += 1
 
 
@@ -119,13 +116,21 @@ async def get_admin_opportunity_detail(opportunity_id: str) -> dict:
         {"$unwind": {"path": "$student", "preserveNullAndEmptyArrays": True}},
         {
             "$project": {
-                "status": 1,
-                "is_interested": 1,
+                "current_status": 1,
+                "final_status": 1,
+                "status": {"$ifNull": ["$current_status", "$status"]},
+                "is_interested": {"$ifNull": ["$application_details.interested", "$is_interested"]},
                 "applied_at": 1,
-                "github_link": 1,
-                "project_link": 1,
-                "resume_link": 1,
-                "has_relevant_project_experience": 1,
+                "application_details": 1,
+                "github_link": {"$ifNull": ["$application_details.github_link", "$github_link"]},
+                "project_link": {"$ifNull": ["$application_details.project_link", "$project_link"]},
+                "resume_link": {"$ifNull": ["$application_details.submitted_resume_url", "$resume_link"]},
+                "has_relevant_project_experience": {
+                    "$ifNull": [
+                        "$application_details.has_relevant_project_experience",
+                        "$has_relevant_project_experience",
+                    ]
+                },
                 "student": {
                     "_id": "$student._id",
                     "name": "$student.name",

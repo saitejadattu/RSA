@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 
 from app.db.collections import APPLICATIONS, STATUS_HISTORY
 from app.db.mongodb import get_database
+from app.models.application import final_status_for, interested_for_api, normalize_application_status, status_for_api
 from app.schemas.status_history import ApplicationStatusUpdate
 from app.utils.mongo import serialize_mongo
 from app.utils.object_id import to_object_id
@@ -52,24 +53,29 @@ async def update_application_status(application_id: str, payload: ApplicationSta
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
 
-    old_status = application.get("status")
+    old_status = status_for_api(application)
+    new_status = normalize_application_status(
+        payload.new_status,
+        interested=interested_for_api(application),
+    )
     now = datetime.now(timezone.utc)
     update_fields = {
-        "status": payload.new_status,
+        "current_status": new_status,
+        "final_status": final_status_for(new_status, interested=interested_for_api(application)),
         "updated_at": now,
     }
-    if payload.new_status == "shortlisted":
+    if new_status == "SHORTLISTED":
         update_fields["shortlisted_at"] = now
-    elif payload.new_status == "rejected":
+    elif new_status == "REJECTED":
         update_fields["rejected_at"] = now
-    elif payload.new_status == "hired":
+    elif new_status in {"SELECTED", "JOINED"}:
         update_fields["hired_at"] = now
 
     await db[APPLICATIONS].update_one({"_id": object_id}, {"$set": update_fields})
     history = await add_status_history(
         application=application,
         old_status=old_status,
-        new_status=payload.new_status,
+        new_status=new_status,
         reason=payload.reason,
         notes=payload.notes,
         changed_by=payload.changed_by,

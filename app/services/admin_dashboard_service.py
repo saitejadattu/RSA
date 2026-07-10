@@ -1,9 +1,26 @@
 from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES, STUDENTS
 from app.db.mongodb import get_database
+from app.models.application import normalize_application_status
 from app.utils.mongo import serialize_mongo
 
 
-REAL_APPLICATION_FILTER = {"is_interested": {"$ne": False}, "status": {"$ne": "not_interested"}}
+REAL_APPLICATION_FILTER = {
+    "$or": [
+        {"application_details.interested": {"$exists": True, "$ne": False}},
+        {
+            "application_details": {"$exists": False},
+            "is_interested": {"$ne": False},
+            "status": {"$ne": "not_interested"},
+        },
+    ]
+}
+NOT_INTERESTED_FILTER = {
+    "$or": [
+        {"application_details.interested": False},
+        {"application_details": {"$exists": False}, "is_interested": False},
+        {"application_details": {"$exists": False}, "status": "not_interested"},
+    ]
+}
 
 
 async def get_admin_dashboard() -> dict:
@@ -14,14 +31,25 @@ async def get_admin_dashboard() -> dict:
     total_opportunities = await db[HIRING_OPPORTUNITIES].count_documents({})
     response_count = await db[APPLICATIONS].count_documents({})
     total_applications = await db[APPLICATIONS].count_documents(REAL_APPLICATION_FILTER)
-    not_interested_count = await db[APPLICATIONS].count_documents({"status": "not_interested"})
-    shortlisted_count = await db[APPLICATIONS].count_documents({"status": "shortlisted"})
-    rejected_count = await db[APPLICATIONS].count_documents({"status": "rejected"})
-    hired_count = await db[APPLICATIONS].count_documents({"status": "hired"})
+    not_interested_count = await db[APPLICATIONS].count_documents(NOT_INTERESTED_FILTER)
+    shortlisted_count = await db[APPLICATIONS].count_documents(
+        {"$or": [{"current_status": "SHORTLISTED"}, {"current_status": {"$exists": False}, "status": "shortlisted"}]}
+    )
+    rejected_count = await db[APPLICATIONS].count_documents(
+        {"$or": [{"current_status": "REJECTED"}, {"current_status": {"$exists": False}, "status": "rejected"}]}
+    )
+    hired_count = await db[APPLICATIONS].count_documents(
+        {
+            "$or": [
+                {"current_status": {"$in": ["SELECTED", "JOINED"]}},
+                {"current_status": {"$exists": False}, "status": "hired"},
+            ]
+        }
+    )
 
     status_breakdown = await db[APPLICATIONS].aggregate(
         [
-            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$group": {"_id": {"$ifNull": ["$current_status", "$status"]}, "count": {"$sum": 1}}},
             {"$sort": {"count": -1, "_id": 1}},
         ]
     ).to_list(length=None)
@@ -64,8 +92,18 @@ async def get_admin_dashboard() -> dict:
                             "as": "application",
                             "cond": {
                                 "$and": [
-                                    {"$ne": ["$$application.is_interested", False]},
-                                    {"$ne": ["$$application.status", "not_interested"]},
+                                    {
+                                        "$ne": [
+                                            {
+                                                "$ifNull": [
+                                                    "$$application.application_details.interested",
+                                                    "$$application.is_interested",
+                                                ]
+                                            },
+                                            False,
+                                        ]
+                                    },
+                                    {"$ne": [{"$ifNull": ["$$application.current_status", "$$application.status"]}, "not_interested"]},
                                 ]
                             },
                         }
@@ -76,7 +114,12 @@ async def get_admin_dashboard() -> dict:
                         "$filter": {
                             "input": "$applications",
                             "as": "application",
-                            "cond": {"$eq": ["$$application.status", "shortlisted"]},
+                            "cond": {
+                                "$in": [
+                                    {"$ifNull": ["$$application.current_status", "$$application.status"]},
+                                    ["SHORTLISTED", "shortlisted"],
+                                ]
+                            },
                         }
                     }
                 },
@@ -139,7 +182,15 @@ async def list_recent_applications(limit: int = 50, status_value: str | None = N
     db = get_database()
     match_stage = dict(REAL_APPLICATION_FILTER)
     if status_value:
-        match_stage["status"] = status_value
+        normalized_status = normalize_application_status(status_value)
+        match_stage["$and"] = [
+            {
+                "$or": [
+                    {"current_status": normalized_status},
+                    {"current_status": {"$exists": False}, "status": status_value},
+                ]
+            }
+        ]
 
     pipeline = [
         {"$match": match_stage},
@@ -160,12 +211,15 @@ async def list_recent_applications(limit: int = 50, status_value: str | None = N
         {"$unwind": {"path": "$opportunity", "preserveNullAndEmptyArrays": True}},
         {
             "$project": {
-                "status": 1,
-                "is_interested": 1,
+                "current_status": 1,
+                "final_status": 1,
+                "status": {"$ifNull": ["$current_status", "$status"]},
+                "is_interested": {"$ifNull": ["$application_details.interested", "$is_interested"]},
                 "applied_at": 1,
-                "github_link": 1,
-                "project_link": 1,
-                "resume_link": 1,
+                "application_details": 1,
+                "github_link": {"$ifNull": ["$application_details.github_link", "$github_link"]},
+                "project_link": {"$ifNull": ["$application_details.project_link", "$project_link"]},
+                "resume_link": {"$ifNull": ["$application_details.submitted_resume_url", "$resume_link"]},
                 "student": {
                     "_id": "$student._id",
                     "name": "$student.name",
@@ -218,11 +272,13 @@ async def list_admin_students(limit: int = 500) -> list[dict]:
         {
             "$project": {
                 "student_id": 1,
-                "status": 1,
+                "current_status": 1,
+                "final_status": 1,
+                "status": {"$ifNull": ["$current_status", "$status"]},
                 "applied_at": 1,
-                "resume_link": 1,
-                "github_link": 1,
-                "project_link": 1,
+                "resume_link": {"$ifNull": ["$application_details.submitted_resume_url", "$resume_link"]},
+                "github_link": {"$ifNull": ["$application_details.github_link", "$github_link"]},
+                "project_link": {"$ifNull": ["$application_details.project_link", "$project_link"]},
                 "company": {"_id": "$company._id", "name": "$company.name"},
                 "opportunity": {
                     "_id": "$opportunity._id",
@@ -244,8 +300,8 @@ async def list_admin_students(limit: int = 500) -> list[dict]:
     student_rows = []
     for student in students:
         student_applications = grouped.get(str(student["_id"]), [])
-        shortlisted = [item for item in student_applications if item.get("status") == "shortlisted"]
-        not_shortlisted = [item for item in student_applications if item.get("status") != "shortlisted"]
+        shortlisted = [item for item in student_applications if item.get("status") in {"SHORTLISTED", "shortlisted"}]
+        not_shortlisted = [item for item in student_applications if item.get("status") not in {"SHORTLISTED", "shortlisted"}]
         student_rows.append(
             {
                 "_id": student["_id"],

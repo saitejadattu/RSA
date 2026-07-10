@@ -77,8 +77,9 @@ async def create_indexes() -> None:
     await db[APPLICATIONS].create_index([("student_id", ASCENDING)])
     await db[APPLICATIONS].create_index([("company_id", ASCENDING)])
     await db[APPLICATIONS].create_index([("opportunity_id", ASCENDING)])
-    await db[APPLICATIONS].create_index([("status", ASCENDING)])
-    await db[APPLICATIONS].create_index([("is_interested", ASCENDING)])
+    await db[APPLICATIONS].create_index([("current_status", ASCENDING)])
+    await db[APPLICATIONS].create_index([("final_status", ASCENDING)])
+    await db[APPLICATIONS].create_index([("application_details.interested", ASCENDING)])
     await db[APPLICATIONS].create_index(
         [("opportunity_id", ASCENDING), ("student_id", ASCENDING)],
         unique=True,

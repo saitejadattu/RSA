@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.db.collections import APPLICATIONS, COMPANIES, HIRING_OPPORTUNITIES, STATUS_HISTORY, STUDENTS
 from app.db.indexes import create_indexes
 from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database
+from app.models.application import build_application_details, default_placement, final_status_for, normalize_application_status, status_for_api
 from app.models.student import build_student_document
 from app.services.student_service import normalize_email, normalize_phone
 from app.utils.password import hash_password
@@ -214,26 +215,41 @@ async def import_shortlist(args: argparse.Namespace) -> dict[str, Any]:
 
         existing = await db[APPLICATIONS].find_one({"opportunity_id": opportunity["_id"], "student_id": student_id})
         if existing:
-            old_status = existing.get("status")
+            old_status = status_for_api(existing)
+            current_status = "SHORTLISTED"
             await db[APPLICATIONS].update_one(
                 {"_id": existing["_id"]},
-                {"$set": {"status": "shortlisted", "shortlisted_at": now, "shortlist": shortlist_sub, "updated_at": now}},
+                {
+                    "$set": {
+                        "current_status": current_status,
+                        "final_status": final_status_for(current_status, interested=True),
+                        "shortlisted_at": now,
+                        "shortlist": shortlist_sub,
+                        "application_details.interested": True,
+                        "updated_at": now,
+                    }
+                },
             )
             application_id = existing["_id"]
             marked += 1
         else:
-            # Shortlisted but no application on file (response sheet was incomplete) — create it.
+            current_status = normalize_application_status("SHORTLISTED", interested=True)
             doc = {
                 "student_id": student_id,
                 "company_id": company["_id"],
                 "opportunity_id": opportunity["_id"],
-                "role": opportunity.get("role"),
-                "status": "shortlisted",
-                "is_interested": True,
                 "applied_at": None,
-                "resume_link": data["resume"],
+                "source": "shortlist_sheet",
+                "current_status": current_status,
+                "final_status": final_status_for(current_status, interested=True),
+                "application_details": build_application_details(
+                    interested=True,
+                    submitted_resume_url=data["resume"],
+                    other_response={"shortlist_snapshot": data},
+                ),
+                "placement": default_placement(),
                 "shortlist": shortlist_sub,
-                "response_snapshot": {"student_name": data["name"], "email": data["email"], "company_name": company.get("name"), "role": opportunity.get("role")},
+                "notes": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -248,7 +264,7 @@ async def import_shortlist(args: argparse.Namespace) -> dict[str, Any]:
             "company_id": company["_id"],
             "opportunity_id": opportunity["_id"],
             "old_status": old_status,
-            "new_status": "shortlisted",
+            "new_status": "SHORTLISTED",
             "reason": "Marked shortlisted from company shortlist sheet",
             "notes": data["willing_notes"],
             "changed_by": None,

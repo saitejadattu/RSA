@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.db.collections import APPLICATIONS, STATUS_HISTORY
 from app.db.indexes import create_indexes
 from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database
+from app.models.application import status_for_api
 
 
 async def backfill(apply: bool) -> dict:
@@ -40,7 +41,7 @@ async def backfill(apply: bool) -> dict:
                     "company_id": application.get("company_id"),
                     "opportunity_id": application.get("opportunity_id"),
                     "old_status": None,
-                    "new_status": application.get("status"),
+                    "new_status": status_for_api(application),
                     "reason": "Initial Stage 2 status history backfill",
                     "notes": None,
                     "changed_by": None,

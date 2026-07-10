@@ -19,6 +19,7 @@ from app.db.collections import (
     HIRING_OPPORTUNITIES,
 )
 from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database
+from app.models.application import build_application_details, default_placement, final_status_for, normalize_application_status
 
 LEGACY_COMPANIES = "companies_legacy_stage1"
 LEGACY_COMPANY_APPLICATIONS = "company_applications_legacy_stage1"
@@ -58,8 +59,9 @@ async def create_stage1_indexes(db) -> None:
     await db[APPLICATIONS].create_index([("student_id", ASCENDING)])
     await db[APPLICATIONS].create_index([("company_id", ASCENDING)])
     await db[APPLICATIONS].create_index([("opportunity_id", ASCENDING)])
-    await db[APPLICATIONS].create_index([("status", ASCENDING)])
-    await db[APPLICATIONS].create_index([("is_interested", ASCENDING)])
+    await db[APPLICATIONS].create_index([("current_status", ASCENDING)])
+    await db[APPLICATIONS].create_index([("final_status", ASCENDING)])
+    await db[APPLICATIONS].create_index([("application_details.interested", ASCENDING)])
     await db[APPLICATIONS].create_index(
         [("opportunity_id", ASCENDING), ("student_id", ASCENDING)],
         unique=True,
@@ -190,10 +192,10 @@ async def build_opportunity_map(
 
 def normalized_status(app: dict, shortlist: dict | None) -> str:
     if shortlist:
-        return shortlist.get("status") or "shortlisted"
+        return normalize_application_status(shortlist.get("status") or "shortlisted", interested=True)
     if app.get("is_interested") is False:
-        return "not_interested"
-    return app.get("status") or "applied"
+        return normalize_application_status("not_interested", interested=False)
+    return normalize_application_status(app.get("status") or "applied", interested=app.get("is_interested"))
 
 
 async def build_applications(
@@ -229,6 +231,8 @@ async def build_applications(
         seen.add(unique_key)
 
         shortlist = shortlist_by_application_id.get(app["_id"])
+        interested = app.get("is_interested")
+        current_status = normalized_status(app, shortlist)
         application_doc = compact_dict(
             {
                 "_id": ObjectId(),
@@ -236,31 +240,43 @@ async def build_applications(
                 "student_id": student_id,
                 "company_id": company_id,
                 "opportunity_id": opportunity_id,
-                "status": normalized_status(app, shortlist),
-                "is_interested": app.get("is_interested"),
                 "applied_at": app.get("applied_at"),
-                "skills": app.get("skills") or {},
-                "has_relevant_project_experience": app.get("has_relevant_project_experience"),
-                "github_link": app.get("github_link"),
-                "project_link": app.get("project_link"),
-                "resume_link": app.get("resume_link"),
-                "willing_remote": app.get("willing_remote"),
-                "available_full_duration": app.get("available_full_duration"),
-                "college_noc": app.get("college_noc"),
-                "interest_reason": app.get("interest_reason"),
-                "not_interested_reason": app.get("not_interested_reason"),
-                "not_interested_other_reason": app.get("not_interested_other_reason"),
-                "response_snapshot": compact_dict(
-                    {
-                        "student_uid": app.get("student_uid"),
-                        "student_name": app.get("student_name"),
-                        "email": app.get("email"),
-                        "mobile": app.get("mobile"),
-                        "company_name": app.get("company_name"),
-                        "role": app.get("role"),
-                    }
+                "source": "response_sheet",
+                "current_status": current_status,
+                "final_status": final_status_for(current_status, interested=interested),
+                "application_details": build_application_details(
+                    interested=interested,
+                    skills=app.get("skills") or {},
+                    has_relevant_project_experience=app.get("has_relevant_project_experience"),
+                    github_link=app.get("github_link"),
+                    project_link=app.get("project_link"),
+                    submitted_resume_url=app.get("resume_link"),
+                    willing_remote=app.get("willing_remote"),
+                    available_full_duration=app.get("available_full_duration"),
+                    comfortable_stipend=app.get("comfortable_stipend"),
+                    comfortable_schedule=app.get("comfortable_schedule"),
+                    college_noc=app.get("college_noc"),
+                    interest_reason=app.get("interest_reason"),
+                    non_interest_reason=app.get("not_interested_reason"),
+                    other_response=compact_dict(
+                        {
+                            "not_interested_other_reason": app.get("not_interested_other_reason"),
+                            "response_snapshot": compact_dict(
+                                {
+                                    "student_uid": app.get("student_uid"),
+                                    "student_name": app.get("student_name"),
+                                    "email": app.get("email"),
+                                    "mobile": app.get("mobile"),
+                                    "company_name": app.get("company_name"),
+                                    "role": app.get("role"),
+                                }
+                            ),
+                            "raw_response": app.get("raw_response"),
+                        }
+                    ),
                 ),
-                "raw_response": app.get("raw_response"),
+                "placement": default_placement(),
+                "notes": None,
                 "created_at": app.get("created_at") or datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
             }
