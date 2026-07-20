@@ -29,6 +29,13 @@ class TranscriptProposeRequest(BaseModel):
     )
 
 
+class SheetPasteRequest(BaseModel):
+    """A pasted response/shortlist sheet. confirm=false only previews."""
+
+    raw_text: str = Field(..., min_length=1, description="Sheet contents pasted as TSV or CSV, header row included.")
+    confirm: bool = Field(default=False, description="False previews without writing; true performs the import.")
+
+
 class TranscriptConfirmRequest(BaseModel):
     """The admin-reviewed proposal. Nothing is written until this is posted."""
 

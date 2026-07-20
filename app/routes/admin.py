@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.schemas.interview_report import ReportVisibilityUpdate
+from app.schemas.interview_report import ReportVisibilityUpdate, SheetPasteRequest
 from app.services.admin_company_service import get_admin_company_detail, get_admin_opportunity_detail
 from app.services.admin_dashboard_service import (
     get_admin_analytics,
@@ -9,6 +9,7 @@ from app.services.admin_dashboard_service import (
     list_recent_applications,
 )
 from app.services.interview_report_service import list_questions, question_bank, set_report_visibility
+from app.services.sheet_import_service import import_responses, import_shortlist
 from app.utils.dependencies import require_admin_access
 
 
@@ -82,3 +83,23 @@ async def bank(
 async def report_visibility(report_id: str, payload: ReportVisibilityUpdate) -> dict:
     """Publish (or unpublish) an RSA report to the student."""
     return await set_report_visibility(report_id, payload.visible_to_student)
+
+
+@router.post("/opportunities/{opportunity_id}/import/responses")
+async def import_response_sheet(opportunity_id: str, payload: SheetPasteRequest) -> dict:
+    """Paste a response sheet for this opening.
+
+    Manual path for sheets that could not be downloaded. Send confirm=false
+    first to see exactly what would change before anything is written.
+    """
+    return await import_responses(
+        opportunity_id=opportunity_id, raw_text=payload.raw_text, confirm=payload.confirm
+    )
+
+
+@router.post("/opportunities/{opportunity_id}/import/shortlist")
+async def import_shortlist_sheet(opportunity_id: str, payload: SheetPasteRequest) -> dict:
+    """Paste a shortlist sheet for this opening. confirm=false previews only."""
+    return await import_shortlist(
+        opportunity_id=opportunity_id, raw_text=payload.raw_text, confirm=payload.confirm
+    )
